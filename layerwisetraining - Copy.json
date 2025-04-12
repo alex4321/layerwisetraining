@@ -1,0 +1,430 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import copy\n",
+    "import transformers\n",
+    "import datasets\n",
+    "import torch\n",
+    "import pickle\n",
+    "from tqdm import tqdm\n",
+    "from torch.utils.data import Dataset, IterableDataset\n",
+    "import gc\n",
+    "import safetensors\n",
+    "import math\n",
+    "import datasets"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "HF_TOKEN = os.environ[\"HF_TOKEN\"]\n",
+    "BASE_MODEL = \"meta-llama/Llama-3.2-1B-Instruct\"\n",
+    "DATASET_PATH = \"G:/data/layerwisetraining\"\n",
+    "BF16 = torch.cuda.is_bf16_supported()\n",
+    "DTYPE = torch.bfloat16 if BF16 else torch.float16\n",
+    "DEVICE = \"cuda:0\"\n",
+    "DEVICE_ORIGINAL_MODEL = \"cpu\"\n",
+    "CHECKPOINT_PATH = \"F:/layerwisetraining\"\n",
+    "RANDOM_SEED = 20250330"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "DatasetDict({\n",
+       "    test: Dataset({\n",
+       "        features: ['text'],\n",
+       "        num_rows: 4358\n",
+       "    })\n",
+       "    train: Dataset({\n",
+       "        features: ['text'],\n",
+       "        num_rows: 1801350\n",
+       "    })\n",
+       "    validation: Dataset({\n",
+       "        features: ['text'],\n",
+       "        num_rows: 3760\n",
+       "    })\n",
+       "})"
+      ]
+     },
+     "execution_count": 3,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "ds = datasets.load_dataset(\"Salesforce/wikitext\", \"wikitext-103-raw-v1\")\n",
+    "ds"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "base_model = transformers.AutoModelForCausalLM.from_pretrained(\n",
+    "    BASE_MODEL,\n",
+    "    token=HF_TOKEN,\n",
+    "    torch_dtype=DTYPE,\n",
+    "    device_map=DEVICE_ORIGINAL_MODEL,\n",
+    "    attn_implementation=\"eager\",\n",
+    ")\n",
+    "tokenizer = transformers.AutoTokenizer.from_pretrained(\n",
+    "    BASE_MODEL,\n",
+    "    token=HF_TOKEN,\n",
+    ")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "original_layers = [\n",
+    "    layer\n",
+    "    for layer in base_model.model.layers\n",
+    "]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def convert_to_embeddings_dataset(ds, tokenizer, directory, chunk_size):\n",
+    "    os.makedirs(directory, exist_ok=True)\n",
+    "    texts = ds['text']\n",
+    "    chunk_count = int(math.ceil(\n",
+    "        len(texts) / chunk_size\n",
+    "    ))\n",
+    "    for i in tqdm(range(chunk_count)):\n",
+    "        fname = os.path.join(directory, f\"chunk-{i}.pkl\")\n",
+    "        if os.path.exists(fname):\n",
+    "            continue\n",
+    "        chunk_texts = texts[i * chunk_size : (i + 1) * chunk_size]\n",
+    "        chunk_batches = {}\n",
+    "        for j, text in enumerate(chunk_texts):\n",
+    "            global_index = i * chunk_size + j\n",
+    "            batch = tokenizer(text, return_tensors=\"pt\")\n",
+    "            batch[\"labels\"] = batch[\"input_ids\"]\n",
+    "            batch[\"inputs_embeds\"] = base_model.model.embed_tokens(batch[\"input_ids\"])\n",
+    "            del batch[\"input_ids\"]\n",
+    "            batch_flatten = {\n",
+    "                key: value[0]\n",
+    "                for key, value in batch.items()\n",
+    "            }\n",
+    "            chunk_batches[global_index] = batch_flatten\n",
+    "        with open(fname, \"wb\") as f:\n",
+    "            pickle.dump(chunk_batches, f)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "100%|██████████| 2/2 [00:00<00:00, 2001.10it/s]\n"
+     ]
+    }
+   ],
+   "source": [
+    "convert_to_embeddings_dataset(\n",
+    "    ds['test'].filter(lambda x: len(x['text']) > 100).shuffle(seed=RANDOM_SEED),\n",
+    "    tokenizer,\n",
+    "    os.path.join(DATASET_PATH, \"test-layer-0-inputs\"),\n",
+    "    chunk_size=1000,\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "100%|██████████| 750/750 [00:00<00:00, 62499.56it/s]\n"
+     ]
+    }
+   ],
+   "source": [
+    "convert_to_embeddings_dataset(\n",
+    "    ds['train'].filter(lambda x: len(x['text']) > 100).shuffle(seed=RANDOM_SEED),\n",
+    "    tokenizer,\n",
+    "    os.path.join(DATASET_PATH, \"train-layer-0-inputs\"),\n",
+    "    chunk_size=1000,\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class EmbeddingsDataset(IterableDataset):\n",
+    "    def __init__(self, dirname):\n",
+    "        self.dirname = dirname\n",
+    "        self.chunk_size, self.total_size = self._get_sizes()\n",
+    "\n",
+    "    def _read(self, fname):\n",
+    "        with open(os.path.join(self.dirname, fname), 'rb') as src:\n",
+    "            return pickle.load(src)\n",
+    "    \n",
+    "    def _get_sizes(self):\n",
+    "        chunk_size = len(self._read('chunk-0.pkl'))\n",
+    "        chunk_files = [\n",
+    "            fname\n",
+    "            for fname in os.listdir(self.dirname)\n",
+    "            if fname.startswith(\"chunk\") and fname.endswith(\".pkl\")\n",
+    "        ]\n",
+    "        chunk_count = len(chunk_files)\n",
+    "        last_chunk_size = len(self._read(f'chunk-{chunk_count-1}.pkl'))\n",
+    "        return chunk_size, chunk_size * (chunk_count - 1) + last_chunk_size\n",
+    "\n",
+    "    def __len__(self):\n",
+    "        return self.total_size\n",
+    "    \n",
+    "    def __iter__(self):\n",
+    "        chunk_count = int(math.ceil(self.total_size / self.chunk_size))\n",
+    "        for i in range(chunk_count):\n",
+    "            chunk_data = self._read(f'chunk-{i}.pkl')\n",
+    "            for j in range(len(chunk_data)):\n",
+    "                yield chunk_data[i * self.chunk_size + j]\n",
+    "            del chunk_data\n",
+    "            gc.collect()\n",
+    "\n",
+    "\n",
+    "def get_embeddings_dataset(dirname):\n",
+    "    return EmbeddingsDataset(dirname)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def collate_fn(batch):\n",
+    "    # Get shapes\n",
+    "    max_len = max(item['inputs_embeds'].shape[0] for item in batch)\n",
+    "    batch_size = len(batch)\n",
+    "    hidden_size = batch[0]['inputs_embeds'].shape[1]\n",
+    "    \n",
+    "    # Initialize padded tensors\n",
+    "    padded_input_embeds = torch.rand((batch_size, max_len, hidden_size), dtype=DTYPE)\n",
+    "    padded_attention_mask = torch.zeros((batch_size, max_len))\n",
+    "    padded_labels = torch.full((batch_size, max_len), fill_value=-100)\n",
+    "    \n",
+    "    # Fill padded tensors with actual values\n",
+    "    for i, item in enumerate(batch):\n",
+    "        seq_len = item['inputs_embeds'].shape[0]\n",
+    "        padded_input_embeds[i, :seq_len] = item['inputs_embeds']\n",
+    "        padded_attention_mask[i, :seq_len] = item['attention_mask']\n",
+    "        padded_labels[i, :seq_len] = item['labels']\n",
+    "        \n",
+    "    return {\n",
+    "        'inputs_embeds': padded_input_embeds,\n",
+    "        'attention_mask': padded_attention_mask,\n",
+    "        'labels': padded_labels\n",
+    "    }"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def create_one_layer_model(base_model, attention_implementation):\n",
+    "    config = copy.deepcopy(base_model.config)\n",
+    "    config.num_hidden_layers = 1\n",
+    "    config._attn_implementation_autoset = False\n",
+    "    config._attn_implementation = attention_implementation\n",
+    "    config.rms_norm_eps = 1e-5\n",
+    "    model = transformers.LlamaForCausalLM(config).to(\n",
+    "        dtype=DTYPE\n",
+    "    ).to(\n",
+    "        device=DEVICE\n",
+    "    )\n",
+    "    for original_module, new_module in [\n",
+    "        (base_model.model.embed_tokens, model.model.embed_tokens),\n",
+    "        (base_model.model.norm, model.model.norm),\n",
+    "        (base_model.model.rotary_emb, model.model.rotary_emb),\n",
+    "        (base_model.lm_head, model.lm_head),\n",
+    "    ]:\n",
+    "        new_module.load_state_dict(original_module.state_dict())\n",
+    "    for freeze_module in [model.model.embed_tokens, model.model.norm, model.model.rotary_emb, model.lm_head]:\n",
+    "        for param in freeze_module.parameters():\n",
+    "            param.requires_grad = False\n",
+    "    return model\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "BATCH_SIZE = 6\n",
+    "GRADIENT_ACCUMULATION_STEPS = 20\n",
+    "LR = 1e-4\n",
+    "WEIGHT_DECAY = 0.01\n",
+    "SAVE_STEPS = 500\n",
+    "SAVE_LIMIT = 3\n",
+    "WARMUP_STEPS = 500\n",
+    "MAX_GRAD_NORN = 0.05\n",
+    "RANDOM_SEED = 42\n",
+    "EARLY_STOPPING_PATIENCE = 1\n",
+    "MAX_STEPS = 6000"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "Could not estimate the number of tokens of the input, floating-point operations will not be computed\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "\n",
+       "    <div>\n",
+       "      \n",
+       "      <progress value='35' max='6000' style='width:300px; height:20px; vertical-align: middle;'></progress>\n",
+       "      [  35/6000 08:55 < 26:54:24, 0.06 it/s, Epoch 0.01/1]\n",
+       "    </div>\n",
+       "    <table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       " <tr style=\"text-align: left;\">\n",
+       "      <th>Step</th>\n",
+       "      <th>Training Loss</th>\n",
+       "      <th>Validation Loss</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "  </tbody>\n",
+       "</table><p>"
+      ],
+      "text/plain": [
+       "<IPython.core.display.HTML object>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "layer_idx = 0\n",
+    "torch.manual_seed(RANDOM_SEED)\n",
+    "ds_embeddings_train = get_embeddings_dataset(\n",
+    "    os.path.join(DATASET_PATH, f\"train-layer-{layer_idx}-inputs\")\n",
+    ")\n",
+    "ds_embeddings_test = get_embeddings_dataset(\n",
+    "    os.path.join(DATASET_PATH, f\"test-layer-{layer_idx}-inputs\")\n",
+    ")\n",
+    "train_checkpoint_path = os.path.join(CHECKPOINT_PATH, f\"layer-{layer_idx}-train-checkpoints\")\n",
+    "train_logging_path = os.path.join(CHECKPOINT_PATH, f\"layer-{layer_idx}-train-logs\")\n",
+    "train_model = create_one_layer_model(base_model, \"eager\") # Flash Attention 2 returns NaN gradients\n",
+    "training_args = transformers.TrainingArguments(\n",
+    "    output_dir=train_checkpoint_path,\n",
+    "    save_total_limit=SAVE_LIMIT,\n",
+    "    max_steps=MAX_STEPS,\n",
+    "    per_device_train_batch_size=BATCH_SIZE,\n",
+    "    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,\n",
+    "    learning_rate=LR,\n",
+    "    weight_decay=WEIGHT_DECAY,\n",
+    "    warmup_steps=WARMUP_STEPS,\n",
+    "    save_strategy=\"steps\",\n",
+    "    save_steps=SAVE_STEPS,\n",
+    "    eval_strategy=\"steps\",\n",
+    "    eval_steps=SAVE_STEPS,\n",
+    "    max_grad_norm=MAX_GRAD_NORN,\n",
+    "    seed=RANDOM_SEED,\n",
+    "    bf16=DTYPE == torch.bfloat16,\n",
+    "    fp16=DTYPE == torch.float16,\n",
+    "    remove_unused_columns=False,\n",
+    "    logging_dir=train_logging_path,\n",
+    "    logging_steps=1,\n",
+    "    report_to=\"tensorboard\",\n",
+    "\n",
+    "    metric_for_best_model=\"loss\",\n",
+    "    greater_is_better=False,\n",
+    "    label_names=[\"labels\"],\n",
+    "    load_best_model_at_end=True,\n",
+    "\n",
+    "    dataloader_pin_memory=False,\n",
+    "    dataloader_num_workers=0,\n",
+    ")\n",
+    "train_trainer = transformers.Trainer(\n",
+    "    model=train_model,\n",
+    "    args=training_args,\n",
+    "    train_dataset=ds_embeddings_train,\n",
+    "    eval_dataset=ds_embeddings_test,\n",
+    "    data_collator=collate_fn,\n",
+    "    callbacks=[\n",
+    "        transformers.EarlyStoppingCallback(early_stopping_patience=1),\n",
+    "    ]\n",
+    ")\n",
+    "train_trainer.train()\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.9"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
