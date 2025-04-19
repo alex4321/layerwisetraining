@@ -3,6 +3,7 @@ from typing import Tuple, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 class IdentityLayer(nn.Module):
@@ -60,5 +61,10 @@ class IdentityWrapper(nn.Module):
         logits_flat = response.logits.view((-1, response.logits.shape[-1]))
         labels_flat = labels.view((-1))
         loss = F.cross_entropy(logits_flat, labels_flat, reduction='sum') / batch_size
-        response.loss = loss
-        return response
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=response.logits,
+            past_key_values=response.past_key_values,
+            hidden_states=response.hidden_states,
+            attentions=response.attentions,
+        )
