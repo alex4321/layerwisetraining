@@ -1,0 +1,7 @@
+jupyter
+datapipe-core
+torch
+transformers
+datasets
+tensorboard
+requests
